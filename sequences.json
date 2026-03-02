@@ -3,7 +3,7 @@
     "sequences":  {
       "ritual_kepala":  [
         "(ulang untuk pakaian apapun: baju, celana, dll)",
-        "/me memebuka baju korban",
+        "/me membuka baju korban",
         "/do baju berhasil dibuka",
         "(ambil kain bersih)",
         "/me membersihkan area sekitar luka menggunakan kain bersih",
