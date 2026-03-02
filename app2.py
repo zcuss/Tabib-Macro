@@ -2,6 +2,7 @@ import ctypes
 import json
 import queue
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -26,6 +27,8 @@ DEFAULT_DATA = {
     },
 }
 
+MUTEX_NAME = "Global\\TabibMacro2SingleInstance"
+
 
 def is_copyable(text: str) -> bool:
     t = (text or "").strip()
@@ -42,11 +45,61 @@ def is_me_or_do(text: str) -> bool:
     return t.startswith("/me") or t.startswith("/do")
 
 
+def _acquire_single_instance_mutex():
+    if sys.platform != "win32":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if not handle:
+        return None
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return None
+    return handle
+
+
+def _release_single_instance_mutex(handle):
+    if sys.platform == "win32" and handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _close_stale_tabib_windows():
+    if sys.platform != "win32":
+        return
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    WM_CLOSE = 0x0010
+    titles = {"Tabib Macro", "Tabib Macro Stepper"}
+    current_pid = kernel32.GetCurrentProcessId()
+
+    EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    @EnumProc
+    def _enum_proc(hwnd, _lparam):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = (buf.value or "").strip()
+        if title not in titles:
+            return True
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value and pid.value != current_pid:
+            user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        return True
+
+    user32.EnumWindows(_enum_proc, 0)
+    time.sleep(0.15)
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Tabib Macro")
         self.root.geometry("780x420")
+        self.overlay_alpha = 0.72
 
         self.data = {}
         self.active_name = ""
@@ -81,8 +134,6 @@ class App:
         self.listener.start()
 
         self.root.after(15, self._drain_actions)
-        self.root.after(250, self._set_overlay_clickthrough)
-        self.root.after(1200, self._set_overlay_clickthrough)
         self.root.after(120, self._overlay_keepalive)
 
     def _ensure_files(self):
@@ -180,8 +231,11 @@ class App:
 
     def _build_overlay_ui(self):
         self.overlay = tk.Toplevel(self.root)
+        self.overlay.withdraw()
         self.overlay.overrideredirect(True)
         self.overlay.attributes("-topmost", True)
+        if sys.platform != "win32":
+            self.overlay.attributes("-alpha", self.overlay_alpha)
         self.overlay.geometry("620x320+8+8")
         self.overlay.configure(bg="#111111")
 
@@ -259,21 +313,42 @@ class App:
         )
         self.overlay_next_label.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
+        self.overlay.update_idletasks()
+        if sys.platform == "win32":
+            self._set_overlay_clickthrough_enabled(True)
+        self.overlay.deiconify()
+
     def _set_overlay_clickthrough(self):
         if sys.platform != "win32":
             return
         self._set_overlay_clickthrough_enabled(True)
+
+    def _get_overlay_top_hwnd(self):
+        if sys.platform != "win32":
+            return 0
+        try:
+            child = int(self.overlay.winfo_id())
+        except Exception:
+            return 0
+        user32 = ctypes.windll.user32
+        top = user32.GetParent(child)
+        return int(top) if top else child
 
     def _set_overlay_clickthrough_enabled(self, enabled: bool):
         if sys.platform != "win32":
             return
         try:
             self.overlay.update_idletasks()
-            hwnd = self.overlay.winfo_id()
+            hwnd = self._get_overlay_top_hwnd()
+            if not hwnd:
+                return
             self.overlay_hwnd = hwnd
             GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
             WS_EX_TRANSPARENT = 0x00000020
             WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_NOACTIVATE = 0x08000000
+            LWA_ALPHA = 0x00000002
             SWP_NOSIZE = 0x0001
             SWP_NOMOVE = 0x0002
             SWP_NOZORDER = 0x0004
@@ -281,12 +356,14 @@ class App:
             SWP_FRAMECHANGED = 0x0020
 
             exstyle = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            exstyle |= WS_EX_TOOLWINDOW
+            exstyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
             if enabled:
                 exstyle |= WS_EX_TRANSPARENT
             else:
                 exstyle &= ~WS_EX_TRANSPARENT
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle)
+            alpha_byte = max(30, min(255, int(self.overlay_alpha * 255)))
+            ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, alpha_byte, LWA_ALPHA)
             ctypes.windll.user32.SetWindowPos(
                 hwnd,
                 0,
@@ -466,13 +543,26 @@ class App:
 
 
 def main():
+    _close_stale_tabib_windows()
+    mutex = _acquire_single_instance_mutex()
+    if sys.platform == "win32" and not mutex:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "Aplikasi sudah berjalan.\nTutup instance lama dulu.",
+            "Tabib Macro",
+            0x00000030,
+        )
+        return
     root = tk.Tk()
     try:
         ttk.Style(root).theme_use("vista")
     except Exception:
         pass
-    App(root)
-    root.mainloop()
+    try:
+        App(root)
+        root.mainloop()
+    finally:
+        _release_single_instance_mutex(mutex)
 
 
 if __name__ == "__main__":
