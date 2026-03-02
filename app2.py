@@ -182,7 +182,6 @@ class App:
         self.overlay = tk.Toplevel(self.root)
         self.overlay.overrideredirect(True)
         self.overlay.attributes("-topmost", True)
-        self.overlay.attributes("-alpha", 0.70)
         self.overlay.geometry("620x320+8+8")
         self.overlay.configure(bg="#111111")
 
@@ -273,7 +272,6 @@ class App:
             hwnd = self.overlay.winfo_id()
             self.overlay_hwnd = hwnd
             GWL_EXSTYLE = -20
-            WS_EX_LAYERED = 0x00080000
             WS_EX_TRANSPARENT = 0x00000020
             WS_EX_TOOLWINDOW = 0x00000080
             SWP_NOSIZE = 0x0001
@@ -283,7 +281,7 @@ class App:
             SWP_FRAMECHANGED = 0x0020
 
             exstyle = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            exstyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW
+            exstyle |= WS_EX_TOOLWINDOW
             if enabled:
                 exstyle |= WS_EX_TRANSPARENT
             else:
@@ -302,44 +300,19 @@ class App:
             pass
 
     def _refresh_overlay(self):
-        if sys.platform == "win32":
-            self._set_overlay_clickthrough_enabled(False)
         try:
-            if self.overlay_prev_text != self.prev_var.get():
-                self.overlay_prev_text = self.prev_var.get()
-                self.overlay_prev_label.config(text=self.overlay_prev_text)
-            if self.overlay_now_text != self.now_var.get():
-                self.overlay_now_text = self.now_var.get()
-                self.overlay_now_label.config(text=self.overlay_now_text)
-            if self.overlay_next_text != self.next_var.get():
-                self.overlay_next_text = self.next_var.get()
-                self.overlay_next_label.config(text=self.overlay_next_text)
+            self.overlay_prev_text = self.prev_var.get() or "-"
+            self.overlay_now_text = self.now_var.get() or "-"
+            self.overlay_next_text = self.next_var.get() or "-"
+            self.overlay_prev_label.config(text=self.overlay_prev_text)
+            self.overlay_now_label.config(text=self.overlay_now_text)
+            self.overlay_next_label.config(text=self.overlay_next_text)
+            self.overlay.deiconify()
+            self.overlay.lift()
+            self.overlay.attributes("-topmost", True)
         except Exception:
             return
-        try:
-            self.overlay.update_idletasks()
-        except Exception:
-            return
-        if sys.platform != "win32":
-            return
-        hwnd = self.overlay_hwnd or self.overlay.winfo_id()
-        if not hwnd:
-            return
-        try:
-            RDW_INVALIDATE = 0x0001
-            RDW_UPDATENOW = 0x0100
-            RDW_ALLCHILDREN = 0x0080
-            ctypes.windll.user32.InvalidateRect(hwnd, None, True)
-            ctypes.windll.user32.RedrawWindow(
-                hwnd,
-                None,
-                None,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
-            )
-            ctypes.windll.user32.UpdateWindow(hwnd)
-        except Exception:
-            pass
-        self._set_overlay_clickthrough_enabled(True)
+        self.overlay.update_idletasks()
 
     def _overlay_keepalive(self):
         self._refresh_overlay()
